@@ -1,3 +1,44 @@
+'''
+Note: 
+    - shouldn't mention cuda when on remote mode
+    - should use intermediate activations as proxies
+    - debug: if downloading from nn_sight are several KBs, then you are probably doing right. 
+    Any big files (e.g., 100 MBs) probably mean you have downloaded the intermediate activations from the server, can you avoid while achieving your objective?
+    
+This module provides various utilities for working with language models, including
+functions for generating text, categorizing reasoning traces, autograding, and
+processing saved responses. It also includes helper functions for loading models,
+computing feature vectors, and steering model behavior.
+Classes:
+    - LinearProbe: A simple linear probe for classification tasks.
+Functions:
+    - chat(prompt, model="gpt-4.1", max_tokens=28000):
+        Sends a prompt to a specified language model and retrieves the response.
+    - generate_cluster_description(examples, model="gpt-4.1", n_trace_examples=0, model_name=None):
+        Generates a concise title and description for a cluster of reasoning traces.
+    - simplify_category_name(category_name):
+        Simplifies a category name by extracting the number if it matches the format 'Category N'.
+    - completeness_autograder(sentences, categories, model="gpt-4.1"):
+        Evaluates if sentences belong to any of the provided categories.
+    - accuracy_autograder(sentences, categories, ground_truth_labels, model="gpt-4.1", n_autograder_examples=30):
+        Evaluates the accuracy of categorization for reasoning traces against ground truth labels.
+    - get_char_to_token_map(text, tokenizer):
+        Creates a mapping from character positions to token positions in a given text.
+    - process_saved_responses(model_name, n_examples, model, tokenizer, layer):
+        Loads and processes saved responses to extract activations for reasoning traces.
+    - load_model_and_vectors(device="cuda:0", load_in_8bit=False, compute_features=True, normalize_features=True, model_name="deepseek-ai/DeepSeek-R1-Distill-Llama-8B", base_model_name=None, dispatch=True):
+        Loads a language model, tokenizer, and mean vectors, with options to compute and normalize feature vectors.
+    - custom_generate_with_projection_removal(model, tokenizer, input_ids, max_new_tokens, label, feature_vectors, steering_config, steer_positive=False):
+        Generates text while removing or adding projections of specific features.
+    - get_random_distinct_colors(labels):
+        Generates random distinct ANSI colors for a list of labels.
+    - convert_numpy_types(obj):
+        Converts numpy types to Python native types for JSON serialization.
+Constants:
+    - steering_config: Configuration for steering specific reasoning functions in various models.
+Classes:
+    - NumpyEncoder: A JSON encoder for handling numpy types.
+'''
 import dotenv
 dotenv.load_dotenv(".env")
 
@@ -18,7 +59,12 @@ import re
 import numpy as np
 import warnings
 from jaxtyping import Float
+from nnsight import NNsight, LanguageModel, CONFIG
+from typing import Any
+CONFIG.set_default_api_key(os.getenv("NN_SIGHT_API_KEY"))
+
 from typing import TypedDict
+
 
 class LinearProbe(nn.Module):
     def __init__(self, hidden_size, num_labels):
@@ -669,10 +715,31 @@ def load_model_and_vectors(device="cuda:0", load_in_8bit=False, compute_features
         base_model_name (str): Name/path of the base model to load
     """
     model = LanguageModel(model_name, dispatch=dispatch, load_in_8bit=load_in_8bit, device_map=device, torch_dtype=torch.bfloat16)
-    
     model.generation_config.temperature=None
     model.generation_config.top_p=None
     model.generation_config.do_sample=False
+
+    try:
+        N_HEADS = model.config.n_head
+    except:
+        N_HEADS = model.config.num_attention_heads
+    try:
+        N_LAYERS = model.config.n_layer
+    except:
+        N_LAYERS = model.config.num_hidden_layers
+    try:
+        D_MODEL = model.config.n_embd
+    except:
+        D_MODEL = model.config.hidden_size
+    try:
+        D_HEAD = model.config.d_head
+    except:
+        D_HEAD = model.config.head_dim
+
+    print(f"Number of heads: {N_HEADS}")
+    print(f"Number of layers: {N_LAYERS}")
+    print(f"Model dimension: {D_MODEL}")
+    print(f"Head dimension: {D_HEAD}\n")
     
     tokenizer = model.tokenizer
 
@@ -698,7 +765,7 @@ def load_model_and_vectors(device="cuda:0", load_in_8bit=False, compute_features
             del model
             if base_model:
                 del base_model
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache() # no cuda in remote mode
             gc.collect()
             raise e
         warnings.warn(f"Expected error due to 1st time running, so the mean_vectors file of {model_id} does not exist yet. Proceeding without mean vectors.")
@@ -747,25 +814,39 @@ def custom_generate_with_projection_removal(
         label: The label to steer towards/away from
         feature_vectors: Dictionary of feature vectors containing steering_vector_set
         steer_positive: If True, steer towards the label, if False steer away
+        remote: Default to True
     """
     model_layers = model.model.layers
 
-    with model.session(remote=True) as session:
-        with model.generate(
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id
-        ) as tracer:
-            # Apply .all() to model to ensure interventions work across all generations
-            model_layers.all()
 
-            if feature_vectors is not None:       
-                vector_layer = steering_config[label]["vector_layer"]
-                pos_layers = steering_config[label]["pos_layers"]
-                neg_layers = steering_config[label]["neg_layers"]
-                coefficient = steering_config[label]["pos_coefficient"] if steer_positive else steering_config[label]["neg_coefficient"]
-        
+    with model.generate(
+        input_ids,
+        max_new_tokens=max_new_tokens,
+        pad_token_id=tokenizer.eos_token_id,
+        remote=True
+    ) as tracer:
+        # Apply .all() to model to ensure interventions work across all generations
+        model_layers.all()
 
+        if feature_vectors is not None:       
+            vector_layer = steering_config[label]["vector_layer"]
+            pos_layers = steering_config[label]["pos_layers"]
+            neg_layers = steering_config[label]["neg_layers"]
+            coefficient = steering_config[label]["pos_coefficient"] if steer_positive else steering_config[label]["neg_coefficient"]
+     
+
+            if steer_positive:
+                # feature_vector = feature_vectors[label][vector_layer].to("cuda").to(torch.bfloat16) # This line should be used in non-remote version
+                feature_vector = feature_vectors[label][vector_layer] # can't we use it as proxy?
+                for layer_idx in pos_layers:         
+                    model.model.layers[layer_idx].output[0][:, :] += coefficient * feature_vector.unsqueeze(0).unsqueeze(0) 
+                    # The core to this function: activation coefficient * vector is added
+                    # different than 1.4.2 ARENA, we add feature vector at all positions in the sequence
+            else:
+                # feature_vector = feature_vectors[label][vector_layer].to("cuda").to(torch.bfloat16) # This line should be used in non-remote version
+                feature_vector = feature_vectors[label][vector_layer]
+                for layer_idx in neg_layers:         
+                    model.model.layers[layer_idx].output[0][:, :] -= coefficient * feature_vector.unsqueeze(0).unsqueeze(0)
                 if steer_positive:
                     feature_vector = feature_vectors[label][vector_layer]
                     for layer_idx in pos_layers:         

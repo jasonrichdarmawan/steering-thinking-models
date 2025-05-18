@@ -1,68 +1,146 @@
-# How to
+# Understanding Reasoning in Thinking Language Models via Steering Vectors
+
+Implementation of experiments and analysis for the paper ["Understanding Reasoning in Thinking Language Models via Steering Vectors"](https://openreview.net/forum?id=OwhVWNOBcz).
+
+This repository provides tools for analyzing reasoning patterns in language models through steering vectors, allowing deeper insights into how LLMs process and execute different types of reasoning.
+
+## Repository Structure
+
+```
+steering-thinking-models/
+├── compare-base-reasoning/    # Compare reasoning capabilities between models
+│   ├── compare_reasoning.py  # Core comparison implementation
+│   └── run.sh               # Execution script
+├── messages/                 # Message handling utilities
+├── notebooks/               # Analysis notebooks
+├── steering/                # Core steering implementation
+│   ├── coefficient_study.py # Study steering coefficient effects
+│   ├── evaluate_MATH.py    # Evaluate on MATH dataset
+│   ├── evaluate_steering.py # General steering evaluation
+│   └── evaluate_vectors.py # Vector evaluation utilities
+├── train-steering-vectors/  # Training steering vectors
+│   ├── cosine_sim.py      # Cosine similarity analysis
+│   └── train_vectors.py   # Vector training implementation
+├── utils/                  # Common utilities
+└── vector-layer-attribution/ # Layer effect analysis
+    └── analyze_layer_effects.py # Layer-wise effect analysis
+```
 
 ## Requirements
 
-- A workstation node with 24GB VRAM to load DeepSeek-R1-Distill-Llama-8B, i.e. 1x NVIDIA 3090
-- API keys from [OpenAI Platform](https://platform.openai.com/api-keys) and [OpenRouter](https://openrouter.com/settings/keys)
+- A workstation with 24GB VRAM (e.g., 1x NVIDIA 3090) for loading DeepSeek-R1-Distill-Llama-8B
+- API keys from:
+  - [OpenAI Platform](https://platform.openai.com/api-keys)
+  - [OpenRouter](https://openrouter.com/settings/keys)
+  - [NDIF](https://login.ndif.us/)
 
-## Steps
+## Installation
 
-1. Use Conda
+1. Install Miniconda:
+```bash
+mkdir -p ~/miniconda3
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+rm ~/miniconda3/miniconda.sh
+source ~/miniconda3/bin/activate
+conda init --all
+```
 
-   1. Install Miniconda
-      ```shell
-      mkdir -p ~/miniconda3
-      wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
-      bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-      rm ~/miniconda3/miniconda.sh
+2. Create and activate environment:
+```bash
+conda create --name steering-env python=3.11
+conda activate steering-env
+```
 
-      source ~/miniconda3/bin/activate
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-      conda init --all
-      ```
-   2. Create environment
+4. Set up environment variables (.env file):
+```
+OPENAI_ORG_ID=<org id from https://platform.openai.com/settings/organization/general>
+OPENAI_API_KEY=<api key from https://platform.openai.com/api-keys>
+OPENROUTER_API_KEY=<api key from https://openrouter.com/settings/keys>
+NDIF_API_KEY=<api key from https://login.ndif.us/>
+```
 
-      ```shell
-      conda create --name steering-env python=3.11
-      conda activate steering-env
-      ```
-   3. Install packages
-      
-      ```shell
-      pip install -r requirements.txt
-      ```
-   4. Select Interpreter on VS Code
+## Using nnsight
 
-      Press `Shift+Command+P`, search for `Select Interpreter` and select `steering-env`
+This project uses nnsight for model analysis. Key integration points:
 
-2. Use Python Interaective Window on VS Code
+1. Model Loading:
+```python
+from nnsight import NNsight, LanguageModel
+model = NNsight.from_pretrained("model_name")
+```
 
-   1. Install the Python and the Jupyter Extensions
-   2. Create Python Interactive Window
+2. Remote Execution:
+```python
+CONFIG.set_default_api_key(os.getenv("NDIF_API_KEY"))
+with model.session(remote=True):
+    # Your code here
+```
 
-      Press `Shift+Command+P` and search for `Jupyter: Create Interactive Window`
+3. Layer Tracing:
+```python
+with model.trace(input_ids) as tracer:
+    # Capture layer outputs
+    for layer_idx in range(model.config.num_hidden_layers):
+        layer_outputs.append(model.model.layers[layer_idx].output[0].save())
+```
 
-3. Set up the `.env` file
+## Key Features
 
-   ```
-   OPENAI_ORG_ID=get the org id from https://platform.openai.com/settings/organization/general
-   OPENAI_API_KEY=get the api key from https://platform.openai.com/api-keys
-   OPENROUTER_API_KEY=get the api key from https://openrouter.com/settings/keys
-   NDIF_API_KEY=get the api key from https://login.ndif.us/
-   ```
+1. Training Steering Vectors:
+```bash
+python train_vectors.py --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
+    --n_samples 500 --max_tokens 1000 --batch_size 4 \
+    --save_every 1 --load_from_json
+```
 
-4. Set the limits in the [OpenAI Platform account](https://platform.openai.com/settings/organization/limits)
+2. Analyzing Layer Effects:
+```bash
+python analyze_layer_effects.py --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
+    --n_examples 500 --load_in_8bit True
+```
 
-   Set it to $10.
+3. Evaluating Steering:
+```bash
+python evaluate_steering.py --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+```
 
-5. Add balance to [OpenAI Platform account](https://platform.openai.com/settings/organization/billing/overview)
+## Migration to nnsight Remote
 
-   Add $5.
-   
-   If you get the `insufficient_quota` error, click the `Cancel plan` button. Then, add another $5.
+To migrate to using nnsight remotely:
 
-# Code for "Understanding Reasoning in Thinking Language Models via Steering Vectors"
+1. Ensure API key is set in .env file:
+```
+NDIF_API_KEY=your_key_here
+```
 
-Paper can be found [here](https://openreview.net/forum?id=OwhVWNOBcz)
+2. Configure remote execution:
+```python
+from nnsight import CONFIG
+CONFIG.set_default_api_key(os.getenv("NDIF_API_KEY"))
+```
 
-⚠️ This is a temporary preview of the code used for the experiments. A more complete and polished version will be released in a couple weeks (Apr 25th)
+3. Use remote session:
+```python
+with model.session(remote=True):
+    # model operations here
+
+# or 
+with model.trace(remote=True) as tracer:
+    ...
+```
+
+4. Key files requiring migration:
+   - train_vectors.py
+   - analyze_layer_effects.py
+   - evaluate_steering.py
+   - evaluate_vectors.py
+
+## License
+
+TBD
